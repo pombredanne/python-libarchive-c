@@ -6,7 +6,7 @@ from version import get_version
 
 setup(
     name='libarchive-c',
-    version=get_version(),
+    version='3.0.0rc1',
     description='Python interface to libarchive',
     author='Changaco',
     author_email='changaco@changaco.oy.lc',
