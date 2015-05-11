@@ -5,11 +5,16 @@
 
 from __future__ import division, print_function, unicode_literals
 
+import codecs
 from contextlib import closing
-from os import path, stat
+import json
+from os import environ, path, stat
 import tarfile
 
 from libarchive import file_reader, memory_reader, memory_writer
+
+
+test_data = path.join(path.dirname(__file__), 'data')
 
 
 def test_entry_properties():
@@ -28,15 +33,17 @@ def test_entry_properties():
             assert not entry.islnk
             assert not entry.issym
             assert not entry.linkpath
+            assert entry.linkpath == entry.linkname
             assert entry.isreg
             assert entry.isfile
             assert not entry.issock
             assert not entry.isdev
             assert b'rw' in entry.strmode
+            assert entry.pathname == entry.path
+            assert entry.pathname == entry.name
 
 
 def test_check_archiveentry_against_tarfile_tarinfo():
-    test_data = path.join(path.dirname(__file__), 'data')
     test_file = path.join(test_data, 'special.tar')
     expected = list(get_tarinfos(test_file))
     result = list(get_entries(test_file))
@@ -46,7 +53,6 @@ def test_check_archiveentry_against_tarfile_tarinfo():
 
 
 def test_check_archiveentry_against_tarfile_tarinfo_relative():
-    test_data = path.join(path.dirname(__file__), 'data')
     test_file = path.join(test_data, 'tar_relative.tar')
     expected = list(get_tarinfos(test_file))
     result = list(get_entries(test_file))
@@ -55,10 +61,78 @@ def test_check_archiveentry_against_tarfile_tarinfo_relative():
     assert len(expected) == len(result)
 
 
-def get_entries(location):
+def test_check_archiveentry_using_python_testtar():
+    test_file = path.join(test_data, 'testtar.tar')
+    check_entries(test_file, regen=False)
+
+
+def test_check_archiveentry_with_unicode_and_binary_entries_tar():
+    test_file = path.join(test_data, 'unicode.tar')
+    check_entries(test_file, regen=False)
+
+
+def test_check_archiveentry_with_unicode_and_binary_entries_zip():
+    test_file = path.join(test_data, 'unicode.zip')
+    check_entries(test_file, regen=False)
+
+
+def test_check_archiveentry_with_unicode_and_binary_entries_zip2():
+    test_file = path.join(test_data, 'unicode2.zip')
+    check_entries(test_file, regen=False)
+
+
+def check_entries(test_file, regen=False):
+    expected_file = test_file + '.json'
+    # needed for sane time stamp comparison
+    environ['TZ'] = 'UTC'
+    if regen:
+        encoded = list(get_entries(test_file, encode=True))
+        with codecs.open(expected_file, 'w', encoding='UTF-8') as ex:
+            json.dump(encoded, ex, indent=2)
+
+    result = list(get_entries(test_file, encode=False))
+
+    with codecs.open(expected_file, encoding='UTF-8') as ex:
+        expected = json.load(ex)
+        # decode encoded paths back to bytes to get meaningful test failures
+        for ex in expected:
+            ex['path'] = decode_path(ex['path'])
+            ex['linkpath'] = decode_path(ex['linkpath'])
+    assert expected == result
+
+
+def encode_path(arch_path):
+    """
+    Return the `arch_path` bytes string as a base64-encoded unicode string.
+    Rationale: tests expectations are stored as UTF-8 JSON yet paths can be
+    arbitrary byte strings. This encoding ensures that we can safely store
+    bytes in UTF-8 strings.
+    """
+    if arch_path:
+        arch_path = codecs.encode(arch_path, 'base64')
+        return unicode(arch_path)
+    else:
+        return arch_path
+
+
+def decode_path(arch_path):
+    """
+    Return a `arch_path` bytes string decoded from a base64-encoded unicode string.
+    Rationale: tests expectations are stored as UTF-8 JSON yet paths can be
+    arbitrary byte strings. This encoding ensures that we can safely store
+    bytes in UTF-8 strings.
+    """
+    if arch_path:
+        arch_path = bytes(codecs.decode(arch_path, 'base64'))
+    return arch_path
+
+
+def get_entries(location, encode=False):
     """
     Using the archive file at `location`, return an iterable of name->value
-    mappings for each libarchive,ArchiveEntry objects essential attributes.
+    mappings for each libarchive.ArchiveEntry objects essential attributes.
+    Paths are base64-encoded because JSON is UTF-8 and cannot handle 
+    arbitrary binary pathdata.
     """
     with file_reader(location) as arch:
         for entry in arch:
@@ -66,7 +140,7 @@ def get_entries(location):
             # hardlinks: tarfile does not, so we ignore the first char
             mode = entry.strmode[1:].decode('ascii')
             yield {
-                'path': entry.pathname,
+                'path': encode_path(entry.pathname) if encode else entry.pathname,
                 'mtime': entry.mtime,
                 'size': entry.size,
                 'mode': mode,
@@ -74,7 +148,7 @@ def get_entries(location):
                 'isdir': entry.isdir,
                 'islnk': entry.islnk,
                 'issym': entry.issym,
-                'linkpath': entry.linkpath or '',
+                'linkpath': encode_path(entry.linkpath) if encode else entry.linkpath,
                 'isblk': entry.isblk,
                 'ischr': entry.ischr,
                 'isfifo': entry.isfifo,
@@ -87,30 +161,32 @@ def get_tarinfos(location):
     Using the tar archive file at `location`, return an iterable of
     name->value mappings for each tarfile.TarInfo objects essential
     attributes.
+    Paths are base64-encoded because JSON is UTF-8 and cannot handle 
+    arbitrary binary pathdata.
     """
     with closing(tarfile.open(location)) as tar:
         while True:
-            tinfo = tar.next()
-            if not tinfo:
+            entry = tar.next()
+            if not entry:
                 break
-            path = tinfo.path or ''
-            if tinfo.isdir() and not tinfo.path.endswith('/'):
+            path = entry.path or ''
+            if entry.isdir() and not entry.path.endswith('/'):
                 path += '/'
             # libarchive introduces prefixes such as h prefix for
             # hardlinks: tarfile does not, so we ignore the first char
-            mode = tarfile.filemode(tinfo.mode)[1:]
+            mode = tarfile.filemode(entry.mode)[1:].decode('ascii')
             yield {
                 'path': path,
-                'mtime': tinfo.mtime,
-                'size': tinfo.size,
+                'mtime': entry.mtime,
+                'size': entry.size,
                 'mode': mode,
-                'isreg': tinfo.isreg(),
-                'isdir': tinfo.isdir(),
-                'islnk': tinfo.islnk(),
-                'issym': tinfo.issym(),
-                'linkpath': tinfo.linkpath or '',
-                'isblk': tinfo.isblk(),
-                'ischr': tinfo.ischr(),
-                'isfifo': tinfo.isfifo(),
-                'isdev': tinfo.isdev(),
+                'isreg': entry.isreg(),
+                'isdir': entry.isdir(),
+                'islnk': entry.islnk(),
+                'issym': entry.issym(),
+                'linkpath': entry.linkpath or None,
+                'isblk': entry.isblk(),
+                'ischr': entry.ischr(),
+                'isfifo': entry.isfifo(),
+                'isdev': entry.isdev(),
             }
