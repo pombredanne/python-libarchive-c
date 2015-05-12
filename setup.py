@@ -6,8 +6,13 @@ from version import get_version
 
 setup(
     name='libarchive-c',
-    version='3.1.0',
-    description='Python interface to libarchive',
+    version='3.2.0',
+    description='''Python interface to libarchive. 
+    This version contains advanced patches to support windows and binary paths.
+    This is based on this pull request and branch:
+    https://github.com/Changaco/python-libarchive-c/pull/9
+    See the branch for a detailed list of the changes.
+    ''',
     author='Changaco',
     author_email='changaco@changaco.oy.lc',
     url='https://github.com/Changaco/python-libarchive-c',
